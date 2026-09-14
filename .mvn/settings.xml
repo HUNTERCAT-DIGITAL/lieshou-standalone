@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  lieshou-boot 项目级 Maven settings（由 .mvn/maven.config 自动加载，无需任何命令行参数）
+
+  为什么提交进仓库：
+    组织约定（/srv/nexus/README.md）让每台开发机用 client-setup.sh 写 ~/.m2/settings.xml；
+    但 CI 的容器 / 任何新克隆都不该依赖"某台机器配过没有"。
+    本文件把「依赖一律走内网 Nexus」变成仓库的一部分，本地与 CI 行为一致。
+
+  mirrorOf=* 的含义：所有远端解析（含插件）都走 Nexus maven-public（group），
+    它再聚合 maven-central proxy（→ 阿里云 public）+ maven-releases/maven-snapshots。
+    ⇒ 构建可复现性由私服承担，公网只作为 Nexus 的上游。
+
+  ⚠️ 凭证硬规矩（README §3）：绝不把账号写进仓库。
+    下面 <servers> 用 Maven 的 ${env.*} 插值，仅在 mvn deploy 时由 CI 变量注入。
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <mirrors>
+    <mirror>
+      <id>nexus-public</id>
+      <name>内网 Nexus · maven-public（group）</name>
+      <url>https://nexus.ts.huntercat.cn/repository/maven-public/</url>
+      <mirrorOf>*</mirrorOf>
+    </mirror>
+  </mirrors>
+
+  <!-- 仅 mvn deploy 使用；凭证来自环境变量（CI 变量 / 本机 export），不落仓库 -->
+  <servers>
+    <server>
+      <id>nexus</id>
+      <username>${env.NEXUS_USER}</username>
+      <password>${env.NEXUS_PASS}</password>
+    </server>
+  </servers>
+
+</settings>
