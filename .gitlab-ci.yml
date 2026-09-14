@@ -16,6 +16,17 @@ stages:
   - test
   - release
 
+# main 已设为受保护分支（push_access_level=0，无人可直推）→ 一律走 特性分支 + MR。
+# 没有这段 workflow 时，推特性分支会生成一个「0 job」的空 pipeline；
+# 分支与 MR 并存时还会重复跑两遍。
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
 variables:
   GIT_SUBMODULE_STRATEGY: none
   GIT_DEPTH: 0
@@ -40,7 +51,7 @@ backend:
     - mvn -B -ntp -f pom.xml verify
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
 # —— 前端：自动装配 → 依赖 → 类型检查 ——
@@ -72,10 +83,10 @@ frontend:
     - (cd apps/mini-program && pnpm typecheck)
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
-# —— 组合发布（tag v* 触发；在 main 上不触发即为惰性）——
+# —— 组合发布（tag v* 触发；在分支上不触发即为惰性）——
 # ⚠️ maven 镜像含 JDK21 + mvn + git，但**没有 Node**（也没有 xz，故只能取 .tar.gz），下面自装
 # ⚠️ job 级 before_script 会覆盖 default，所以这里要把 submodule 那套也重复一遍
 release:
