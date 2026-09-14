@@ -14,9 +14,9 @@ import cn.huntercat.lieshou.framework.auth.UserAuthPort;
 import cn.huntercat.lieshou.framework.auth.dto.AuthDtos.LoginRequest;
 import cn.huntercat.lieshou.framework.common.dto.UserAuthView;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -31,7 +31,16 @@ class AuthServiceTest {
   @Mock private UserAuthPort userClient;
   @Mock private PasswordEncoder passwordEncoder;
 
-  @InjectMocks private AuthService authService;
+  private AuthService authService;
+
+  @BeforeEach
+  void setUp() {
+    // defaultTenantCode 是 AuthService 的构造参数（生产由 @Value("${auth.default-tenant-code:huntercat}") 注入）。
+    // 不能用 @InjectMocks：Mockito 对无法解析的 String 参数会传 null，
+    // 使 login_defaultTenantCode_whenBlank 里"空白 tenantCode → 兜底默认租户"的桩永远匹配不上
+    // （实测报 PotentialStubbingProblem，实际调用为 findByTenantAndUsername(null, "admin")）。
+    authService = new AuthService(jwt, userClient, passwordEncoder, "huntercat");
+  }
 
   private UserAuthView user(String status) {
     return new UserAuthView(
