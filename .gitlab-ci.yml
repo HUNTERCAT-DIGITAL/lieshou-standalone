@@ -1,0 +1,83 @@
+# GitLab CI —— 由 .github/workflows/ci.yml 平移（GitHub Actions → 内网 GitLab）
+# runner：wqc-server-dell 的 docker executor（tag wqc）
+# ⚠️ 不用 GitLab CI cache：runner 侧已有 /srv/gitlab-runner-cache/m2 挂到 /root/.m2，
+#    且历史上 self-hosted 缓存上传触发过故障（对齐端仓结论 ae0feb0）
+stages:
+  - test
+  - release
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  GIT_DEPTH: 0
+
+default:
+  tags: [wqc]
+
+# —— 后端：framework submodule + backend 聚合构建 ——
+backend:
+  stage: test
+  image: maven:3.9-eclipse-temurin-21
+  timeout: 45m
+  script:
+    - java -version
+    - mvn -B -ntp -f pom.xml verify
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# —— 前端：自动装配 → 依赖 → 类型检查 ——
+# 用 bookworm 全量镜像而非 slim：slim 里没有 git，runner 需要它做克隆/子模块
+frontend:
+  stage: test
+  image: node:22-bookworm
+  timeout: 45m
+  script:
+    - node -v
+    - corepack prepare pnpm@9.12.0 --activate
+    - node scripts/prepare.mjs
+    - pnpm install --no-frozen-lockfile --force
+    - |
+      for app in admin desktop mobile mini-program; do
+        if [ -f "apps/$app/pnpm-workspace.yaml" ]; then
+          (cd "apps/$app" && pnpm install --no-frozen-lockfile --force)
+        fi
+      done
+    - (cd apps/admin && pnpm typecheck)
+    - (cd apps/desktop && pnpm typecheck)
+    - (cd apps/mini-program && pnpm typecheck)
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# —— 组合发布（tag v* 触发；在 main 上不触发即为惰性）——
+# ⚠️ maven 镜像含 JDK21 + mvn + git，但**没有 Node**（也没有 xz，故只能取 .tar.gz），下面自装
+release:
+  stage: release
+  image: maven:3.9-eclipse-temurin-21
+  timeout: 90m
+  before_script:
+    - curl -fsSL -o /tmp/node.tar.gz https://registry.npmmirror.com/-/binary/node/v22.23.2/node-v22.23.2-linux-x64.tar.gz
+    - tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1
+    - node -v
+    - corepack enable && corepack prepare pnpm@9.12.0 --activate
+    - pnpm -v
+  script:
+    - ./scripts/release.sh --with-mini --with-mobile
+    - PKG_BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/lieshouboot/${CI_COMMIT_TAG}"
+    - |
+      for f in dist/lieshouboot-release/backend/*.jar dist/lieshouboot-release/README.md; do
+        echo "上传 $(basename "$f")"
+        curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$f" "${PKG_BASE}/$(basename "$f")"
+      done
+    - tar czf "lieshouboot-${CI_COMMIT_TAG}.tar.gz" -C dist lieshouboot-release
+    - curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "lieshouboot-${CI_COMMIT_TAG}.tar.gz" "${PKG_BASE}/lieshouboot-${CI_COMMIT_TAG}.tar.gz"
+    - |
+      curl -sS --fail --request POST \
+        --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --header "Content-Type: application/json" \
+        --data "{\"name\":\"LieShouBoot ${CI_COMMIT_TAG}\",\"tag_name\":\"${CI_COMMIT_TAG}\",\"assets\":{\"links\":[{\"name\":\"组合发布包\",\"url\":\"${PKG_BASE}/lieshouboot-${CI_COMMIT_TAG}.tar.gz\",\"link_type\":\"package\"}]}}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
