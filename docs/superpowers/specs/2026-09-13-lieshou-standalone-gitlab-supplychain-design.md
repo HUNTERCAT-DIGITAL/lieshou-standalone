@@ -49,6 +49,27 @@
 | `legalmind-demo` 100.64.0.27 | 4 | 5G | 78G | ✅ 19.3.2 | ❌ | ✅ |
 | 本机 `ubt-ofc-weilai` 100.64.0.30 | 2 | ~2G | 19G | ❌ | ✅ | ❌ |
 
+### 2.5 `wqc-server-dell` 的额外硬约束（决定 runner 形态，全部实测）
+
+> 🔴 **【本节结论已被推翻，见 §8 修订记录 2026-09-13 第二条】**
+> 下面「helper 镜像拉不到 → docker executor 不可用」的判断**是错的**，源于我用错了 tag（写成
+> `x86_64-19.3.2`，缺 `v` 前缀）。正确 tag `gitlab/gitlab-runner-helper:x86_64-v19.3.2` **可正常拉取**。
+> 因此 docker executor **可行**，§3.2 的 shell executor 方案**作废**。
+> 事实性内容（sudo 不可用、Docker Hub 直连不可达、CA 未进系统信任库、`Linger=yes`）仍然成立并有效。
+> 待重写的章节：§3.2（runner 形态）、§3.4（镜像策略）、§3.5（嵌套克隆）、§4（实施顺序）。
+
+| 约束 | 实测 | 后果 |
+| --- | --- | --- |
+| `sudo -n` 不可用（需密码） | `sudo -n true` 失败 | **不能 apt 安装 gitlab-runner、不能装 CA 到系统信任库、不能建 systemd 系统服务** |
+| Docker Hub 不可达，仅镜像源 | `/etc/docker/daemon.json` 三个 registry-mirrors；`registry-1.docker.io` 超时 | — |
+| `gitlab/gitlab-runner` 镜像拉不到 | 直连与 `docker.1ms.run/` 均 FAIL | **不能跑容器化 runner** |
+| `gitlab/gitlab-runner-helper` 镜像拉不到 | 同上（两个源都 FAIL） | 🔴 **docker executor 根本不可用**（helper 镜像缺失） |
+| Caddy 内部 CA 未进系统信任库 | `curl https://gitlab.ts.huntercat.cn` → `(60) unable to get local issuer certificate` | runner 与 job 都必须显式拿到 CA |
+| `Linger=yes`、`systemctl --user` 正常 | `loginctl show-user weilai` → `Linger=yes`；`systemctl --user is-system-running` → `running` | ✅ **可以跑用户级 systemd 服务**（免 sudo 且开机自启） |
+| 已有可复用镜像 | `maven:3.9-eclipse-temurin-21`、`node:22-slim` 已在本机 | 仅在选 docker executor 时有意义（已排除） |
+
+**结论**：docker executor 在此宿主上不可行（无 helper 镜像 + 无 sudo + CA 不受信）。runner 形态必须改为 **shell executor + 非 root 用户级服务 + `$HOME` 内工具链**。
+
 ### 2.4 嵌套 submodule
 
 `apps/*` 与 `open/*` 各自的 `.gitmodules` 共 **25 条**仍指 GitHub（端仓 5×4 + contract-api 1 + contract-types 1 + ui 3）。
@@ -69,52 +90,64 @@ node ~/dev/gitlab-mirror/huntercat-ai-kit/tools/pin.mjs urls --fix   # 在本仓
 
 改完执行 `git submodule sync --recursive`，使 `.git/config` 与 `.gitmodules` 一致。
 
-### 3.2 runner 供给（新增）
+### 3.2 runner 供给（🟠 本节作废，待重写）
 
-在 `wqc-server-dell` 注册 **docker executor** 的 **group runner**（group = `huntercat-digital`），**带 tag**：
+> ⚠️ **本节基于 §2.5 的错误结论，已作废。** 实际采用用户已建好的 group runner id=10
+> `java-maven (wqc-server-dell · docker)`（docker executor、tag `java,wqc`）。
+> 重写前不要按本节施工。
 
-- tags：`wqc-docker`
-- 并发：`concurrent = 2`，单 job 资源上限保守
-- `pull_policy = if-not-present`
+在 `wqc-server-dell` 上以 **非 root 用户 `weilai`** 运行 **shell executor** 的 **group runner**（group = `huntercat-digital`），**带 tag `wqc-shell`**：
 
-**为什么 group runner + tag 而不是 project runner**：带 tag 的 runner **只接取显式声明该 tag 的 job**，因此本仓之外的 `admin-web` / `desktop`（job 无 tag）**不会被误接**，blast radius 为 0；将来给它们的 job 加 `tags: [wqc-docker]` 即可逐步接入 —— 一次注册解决三个仓的 CI 死局，且不强制改变别人的行为。
+- 二进制：从官方下载 `gitlab-runner-linux-amd64` **v19.3.1**（与本实例 GitLab 版本对齐；S3 源实测 200 可达）落到 `~/.local/bin/gitlab-runner`，无需 sudo
+- 服务：**用户级 systemd**（`~/.config/systemd/user/gitlab-runner.service` + `systemctl --user enable --now`）—— `Linger=yes` 已实测，开机自启、崩溃自恢复。这是避开「nohup 进程静默死掉」这个刚发生过的故障模式的关键
+- 工具链：全部装在 `$HOME`，不碰系统目录（无 sudo）
+  - JDK 21：Adoptium `OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz` → `~/.ci/tools/jdk-21`
+  - Maven：`apache-maven-3.9.16-bin.tar.gz` → `~/.ci/tools/maven`
+  - pnpm：宿主机已有 node v22.23.2 + corepack，用 `corepack prepare pnpm@9.12.0`（无需装）
+  - CA：把 Caddy 根证书放 `~/.ci/certs/caddy-root.crt`，在 runner 配置的 `environment` 里注入 `GIT_SSL_CAINFO`（shell executor 下 git 与 maven 都认它）
+- 并发：`concurrent = 2`
 
-**为什么 docker executor**：宿主无需安装 JDK/mvn/pnpm，工具链全部来自官方镜像；`wqc-server-dell` 是既定的 CI/CD 中枢且资源最足（20C/35G/77G）。
+**为什么 group runner + tag 而不是 project runner**：带 tag 的 runner **只接取显式声明该 tag 的 job**，因此本仓之外的 `admin-web` / `desktop`（job 无 tag）**不会被误接**，blast radius 为 0；将来给它们的 job 加 `tags: [wqc-shell]` 即可逐步接入 —— 一次注册解决三个仓的 CI 死局，且不强制改变别人的行为。
 
-runner 注册凭据通过 GitLab API/rails console 生成（本机已授权自取 PAT / 走 Rails），token 只落在 runner 宿主的 `config.toml`（600），不进仓库、不回显。
+**为什么 shell executor 而不是 docker executor**：见 2.5 —— docker executor 在本宿主上因缺 helper 镜像、缺 sudo、CA 不受信而**不可用**。shell executor 反而更匹配本组既有形态（`dwjk-demo` / `legalmind-demo` 的 runner 都是 shell executor）。本仓三个 job 都不需要容器（`release.sh` 只产 jar + 拷产物，不构建镜像），shell 足够。
 
-### 3.3 关闭 Auto DevOps（前置）
+runner 创建凭据通过 Rails console 生成（不铸造 `api` 全权 PAT），认证 token 只落在 runner 宿主机的 `config.toml`（600），不进仓库、不回显。
 
-对本项目设 `auto_devops_enabled = false`，否则新 `.gitlab-ci.yml` 会与 Auto DevOps 的 job 混跑出噪音。
+### 3.3 Auto DevOps（已确认关闭，无需操作）
+
+实测：`project.auto_devops_enabled?` → **false**；`ProjectAutoDevops(id:28, enabled: false)` 自 2026-09-06 04:00 起存在。实例级默认仍为 `true`，但项目已显式覆盖。
+
+pipeline 66/67 里那些 `code_quality / build / test / secret_detection / semgrep-sast / container_scanning` job 产生于 09-06 02:01（项目创建时刻，早于该覆盖记录 04:00），因此是**一次性历史噪音，不会重现**。
+
+→ 本节取消操作动作，只保留 §5 的验证约束（新 pipeline 不得出现 Auto DevOps job）。
 
 ### 3.4 `.gitlab-ci.yml`（由 `.github/workflows/ci.yml` 平移）
 
 对齐 `lieshou-app-admin-web/.gitlab-ci.yml` 的既有形态（`GIT_SUBMODULE_STRATEGY: recursive`、不用 CI cache、`corepack prepare pnpm@9.12.0`），保留 backend / frontend / release 三段语义：
 
-| stage | job | 镜像 | 内容 |
+| stage | job | 执行环境 | 内容 |
 | --- | --- | --- | --- |
-| test | `backend` | `maven:3.9-eclipse-temurin-21` | `mvn -B -ntp -f pom.xml verify` |
-| test | `frontend` | `node:22-bookworm` | `node scripts/prepare.mjs` → 根 + 各端 `pnpm install --no-frozen-lockfile --force` → admin/desktop/mini-program `typecheck` |
-| release | `release` | 待定（需 node+pnpm+mvn+JDK21，见 3.6） | `./scripts/release.sh --with-mini --with-mobile` → 传资产 → 建 GitLab Release |
+| test | `backend` | shell（`wqc-shell`） | `mvn -B -ntp -f pom.xml verify` |
+| test | `frontend` | shell（`wqc-shell`） | `node scripts/prepare.mjs` → 根 + 各端 `pnpm install --no-frozen-lockfile --force` → admin/desktop/mini-program `typecheck` |
+| release | `release` | shell（`wqc-shell`） | `./scripts/release.sh --with-mini --with-mobile` → 传资产 → 建 GitLab Release |
 
-- 全部 job `tags: [wqc-docker]`
+- 全部 job `tags: [wqc-shell]`
+- `variables` 注入 `JAVA_HOME` / `PATH` 指向 `$HOME` 工具链；`GIT_SSL_CAINFO` 指向 Caddy 根证书
 - `rules`：`merge_request_event` / `main` / `$CI_COMMIT_TAG`（release job 仅 `$CI_COMMIT_TAG =~ /^v/`）
 - `timeout`：test 45m，release 90m
 
 ### 3.5 嵌套 submodule 的过渡处理
 
-docker executor 的容器内**没有宿主的 SSH 密钥**，因此：
+shell executor **不是容器**，job 直接跑在宿主 `weilai` 用户下，因此克隆凭据来自该用户的 SSH 环境（`~/.ssh/id_ed25519_gitlab` 已实测可免密 clone `huntercat-digital/*`），context 与现状一致：
 
-- **同实例（GitLab）嵌套 submodule**：依赖 GitLab Runner 用 `CI_JOB_TOKEN` 改写认证。**该项必须实测确认**；若不成立，走下面的 pre_clone 注入。
-- **GitHub 嵌套 submodule**（25 条 `git@github.com:`）：那 10 个仓是公开仓，故可用匿名 HTTPS 顶掉 SSH：
+- **同实例（GitLab）嵌套 submodule**：走 SSH，用户在宿主已有密钥 → 直接可用（不需要 job-token 改写）
+- **GitHub 嵌套 submodule**（25 条 `git@github.com:`）：那 10 个仓是公开仓，但仍需该宿主机对 GitHub 的 SSH 可达性；为免依赖，在 runner 配置的 `pre_clone_script` 里做一次匿名 HTTPS 改写：
 
   ```bash
   git config --global url."https://github.com/".insteadOf "git@github.com:"
   ```
 
-  ⚠️ **这条不能写在 `before_script` 里** —— runner 的 submodule 克隆发生在 job 脚本之前的准备阶段。落点只有两个：
-  1. runner `config.toml` 的 `pre_clone_script`（docker executor 支持，**首选**）
-  2. job 里 `GIT_SUBMODULE_STRATEGY: none` + 自己在 script 里先 `git config` 再手动 `git submodule update --init --recursive`（备选，确定性更强但丢失 runner 的同实例 token 改写）
+  ⚠️ **这条不能写在 `before_script` 里** —— runner 的 submodule 克隆发生在 job 脚本之前的准备阶段。shell executor 支持 `pre_clone_script`（**首选**）；备选是 job 里 `GIT_SUBMODULE_STRATEGY: none` + 自己在 script 里先 `git config` 再手动 `git submodule update --init --recursive`。
 
   代价：CI 仍依赖 GitHub 可用性。彻底 GitLab 化必须做那 25 条（独立批次）。
 
@@ -132,14 +165,15 @@ release job 的工具链（需 node+pnpm+mvn+JDK21 同容器）：**首选**自�
 
 | 步 | 动作 | 门 |
 | --- | --- | --- |
-| 0 | 关 Auto DevOps | pipeline 不再出现 Auto DevOps job |
-| 1 | 注册 group runner `wqc-docker` + `pre_clone_script` | runner 出现在 group 列表且 online |
-| 2 | **冒烟 job**：`git submodule update --init --recursive` + `mvn -v` + `node -v` + `pnpm -v` | 递归 submodule 全部拉通（含嵌套 GitLab + 嵌套 GitHub）；三者版本符合预期 |
-| 3 | 提交 `.gitmodules` URL 迁移（pin 不变） | `git submodule status` 全部就位且 SHA 与迁移前逐一相同 |
-| 4 | 提交 `.gitlab-ci.yml`（backend + frontend） | main 上两个 job 绿 |
-| 5 | 加 release job | 打 `v0.1.1` 标签后 Release 资产可下载 |
+| 1 | 在 `wqc-server-dell` 装 `$HOME` 工具链（JDK21 / Maven / pnpm）+ 放 CA | `java -version` 显示 21、`mvn -v`、`pnpm -v` 均可用；`GIT_SSL_CAINFO=... git ls-remote https://gitlab.ts.huntercat.cn/...` 成功 |
+| 2 | 装 gitlab-runner v19.3.1 二进制 + 用户级 systemd 服务 | `systemctl --user is-active gitlab-runner` → `active`；`systemctl --user is-enabled` → `enabled` |
+| 3 | 创建 group runner（tag `wqc-shell`, `run_untagged=false`）并注册 | runner 出现在 group runner 列表且 online；token 不以明文入库 |
+| 4 | **冒烟 job**：递归 submodule + 打印 `java/mvn/node/pnpm` 版本 | 递归 submodule 全部拉通（含嵌套 GitLab + 嵌套 GitHub）；版本符合预期 |
+| 5 | 提交 `.gitmodules` URL 迁移（pin 不变） | `git submodule status` 全部就位且 SHA 与迁移前逐一相同 |
+| 6 | 提交 `.gitlab-ci.yml`（backend + frontend） | main 上两个 job 绿，且 pipeline 内**无 Auto DevOps job** |
+| 7 | 加 release job | 打 `v0.1.1` 标签后 Release 资产可下载 |
 
-冒烟门（步 2）不通过则停下修正 3.5 的方案，不带着已知失败的克隆策略往下走。
+冒烟门（步 4）不通过则停下修正 §3.5 的克隆策略，不带着已知失败的克隆策略往下走。
 
 ## 5. 验收标准
 
@@ -149,7 +183,7 @@ release job 的工具链（需 node+pnpm+mvn+JDK21 同容器）：**首选**自�
 | 2 | pin 未变 | 迁移前后 `git submodule status` 的 SHA 逐一相等 |
 | 3 | 递归初始化成功 | `git submodule update --init --recursive` 退出码 0；顶层 10 条 `git submodule foreach --recursive 'git remote get-url origin'` 全部为 `gitlab.ts.huntercat.cn` 主机；嵌套 GitHub 层按 3.5 走匿名 HTTPS（其 URL 形态保持现状，属本次有意保留的债务） |
 | 4 | 流水线真跑 | GitLab pipeline 上 `backend`、`frontend` job 状态 `success`，非 `stuck_pending` |
-| 5 | Auto DevOps 已关 | 项目设置 `auto_devops_enabled=false`，pipeline 内无 Auto DevOps job |
+| 5 | Auto DevOps 未混入 | 新 pipeline 的 job 列表只含 `.gitlab-ci.yml` 定义的 job，无 `code_quality` / `semgrep-sast` 等 |
 | 6 | Release 可下载 | 打 tag 后 GitLab Release 页面有资产链接且 `curl` 可下载 |
 
 「跑通」的声明以 GitLab pipeline 页面 URL + job 状态为准。
@@ -158,16 +192,27 @@ release job 的工具链（需 node+pnpm+mvn+JDK21 同容器）：**首选**自�
 
 | 风险 | 影响 | 回滚 |
 | --- | --- | --- |
-| 同实例嵌套 submodule 的 job token 认证不成立 | 冒烟门拦住，不往下走 | 改用 `pre_clone_script` 注入 SSH 私钥（file 型 CI 变量） |
+| 非 root 用户级 runner 在重启后不自启 | CI 静默失效（= 刚复现过的故障模式） | 已用 `systemctl --user` + `Linger=yes` 规避；实施后用「重启宿主验证 runner 自动上线」作为独立验收 |
 | GitHub 匿名 HTTPS 被限流/不可用 | frontend/backend job 失败 | 并入「嵌套 25 条迁 GitLab」批次，或自带 token |
-| wqc-server-dell 跑 docker executor 抢资源 | 中枢上其他服务受影响 | 并发设 2 + job timeout；必要时迁 dwjk-demo |
+| `wqc-server-dell` 跑构建抢资源 | 中枢上其他服务受影响 | 并发设 2 + job timeout；必要时迁 dwjk-demo（已有 systemd 级 runner） |
 | `.gitmodules` 改动被误当作 pin 变更 | 可重现性受损 | 本次提交只含 URL 行；用「pin 逐一相等」证据自查 |
-| Auto DevOps 关闭影响本项目其他能力 | 低 | 单项目设置，可一键开回 |
+| `$HOME` 工具链被其他操作弄脏 | job 随机失败 | 全部路径收敛在 `~/.ci/` 单一目录，可整体删除重建 |
+| 构建产物/工作目录占满 `/` | 中枢磁盘告警 | runner `builds_dir` 指到独立目录并纳入清理；当前 77G 可用 |
 
 **整体回滚**：`git revert` 对应提交即可（URL 与 CI 是两个独立提交，可分别回退）；runner 在 GitLab 侧禁用/删除，不影响仓库内容。
 
 ## 7. 未决项
 
-1. **release job 镜像**：自建（Harbor）vs `maven` 镜像内装 node —— 实施阶段定，不阻塞步 0–4
-2. **嵌套 25 条**是否立项迁 GitLab（跨 10 个上游仓的 MR）—— 本次明确不做
-3. 是否把 `admin-web` / `desktop` 的 job 加 `tags: [wqc-docker]` 接入新 runner —— 本次不主动改他人仓
+1. **嵌套 25 条**是否立项迁 GitLab（跨 10 个上游仓的 MR）—— 本次明确不做
+2. 是否把 `admin-web` / `desktop` 的 job 加 `tags: [wqc-shell]` 接入新 runner —— 本次不主动改他人仓
+3. `$HOME` 工具链的版本升级策略（本次硬编码 JDK 21.0.12.1+1 / Maven 3.9.16 / pnpm 9.12.0）—— 后续可收敛成一个 `~/.ci/setup.sh`
+
+## 8. 修订记录
+
+| 日期 | 变更 | 原因 |
+| --- | --- | --- |
+| 2026-09-13 | runner 形态由 **docker executor** 改为 **shell executor + 非 root 用户级 systemd** | 实测：`wqc-server-dell` 上 `gitlab/gitlab-runner` 与 helper 镜像均拉不到（Docker Hub 被墙且镜像源无此镜像）、`sudo -n` 不可用、Caddy CA 未进系统信任库 → docker executor 不可行 |
+| 2026-09-13 | §3.3 由「关闭 Auto DevOps」改为「已确认关闭」 | 实测 `project.auto_devops_enabled? == false`，pipeline 66/67 的 Auto DevOps job 是 09-06 项目创建时刻的一次性历史噪音 |
+| 2026-09-13 | §7 未决项 1（release job 镜像）关闭 | 改用 shell executor 后工具链统一由 `$HOME` 提供，不再需要镜像选型 |
+| 2026-09-13 | **上述两条 runner 形态变更全部作废** | 实测发现上一条的「helper 镜像拉不到」是 **tag 写法错误**（漏 `v` 前缀）所致：`gitlab/gitlab-runner-helper:x86_64-v19.3.2` 可正常拉取。docker executor 可行。另：用户已自行建好 group runner id=10（docker executor，tag `java,wqc`，`maven:3.9-eclipse-temurin-21` 镜像，CA 走 `tls-ca-file`，`RestartPolicy=always`） |
+| 2026-09-13 | §2.5 事实层修正 | Docker Hub **直连**仍不可达（`registry-1.docker.io` 超时）、需走 registry-mirrors，但镜像源能正常供给所需的 `gitlab-runner` / `gitlab-runner-helper` / `maven` / `node` 镜像 → 「拉不到镜像」不成立 |
