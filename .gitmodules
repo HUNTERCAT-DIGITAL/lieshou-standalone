@@ -1,30 +1,30 @@
 [submodule "apps/admin"]
 	path = apps/admin
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-app-admin-web.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-app-admin-web.git
 [submodule "apps/desktop"]
 	path = apps/desktop
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-app-desktop.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-app-desktop.git
 [submodule "apps/mobile"]
 	path = apps/mobile
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-app-mobile.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-app-mobile.git
 [submodule "apps/mini-program"]
 	path = apps/mini-program
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-app-mini-program.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-app-mini-program.git
 [submodule "framework"]
 	path = framework
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-framework.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-framework.git
 [submodule "open/contract-api"]
 	path = open/contract-api
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-contract-api.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-contract-api.git
 [submodule "open/contract-types"]
 	path = open/contract-types
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-contract-types.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-contract-types.git
 [submodule "open/contract-config"]
 	path = open/contract-config
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-contract-config.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-contract-config.git
 [submodule "open/ui"]
 	path = open/ui
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-ui.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-ui.git
 [submodule "open/core-web"]
 	path = open/core-web
-	url = git@github.com:HUNTERCAT-DIGITAL/lieshou-core-web.git
+	url = ssh://git@gitlab.ts.huntercat.cn:22220/huntercat-digital/lieshou-core-web.git
