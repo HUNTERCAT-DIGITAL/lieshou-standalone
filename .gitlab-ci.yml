@@ -72,7 +72,10 @@ release:
         curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$f" "${PKG_BASE}/$(basename "$f")"
       done
     - tar czf "lieshouboot-${CI_COMMIT_TAG}.tar.gz" -C dist lieshouboot-release
-    - curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "lieshouboot-${CI_COMMIT_TAG}.tar.gz" "${PKG_BASE}/lieshouboot-${CI_COMMIT_TAG}.tar.gz"
+    - |
+      curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file "lieshouboot-${CI_COMMIT_TAG}.tar.gz" \
+        "${PKG_BASE}/lieshouboot-${CI_COMMIT_TAG}.tar.gz"
     - |
       curl -sS --fail --request POST \
         --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \

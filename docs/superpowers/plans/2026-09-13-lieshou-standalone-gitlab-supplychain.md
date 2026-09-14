@@ -245,7 +245,10 @@ release:
         curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$f" "${PKG_BASE}/$(basename "$f")"
       done
     - tar czf "lieshouboot-${CI_COMMIT_TAG}.tar.gz" -C dist lieshouboot-release
-    - curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "lieshouboot-${CI_COMMIT_TAG}.tar.gz" "${PKG_BASE}/lieshouboot-${CI_COMMIT_TAG}.tar.gz"
+    - |
+      curl -sS --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file "lieshouboot-${CI_COMMIT_TAG}.tar.gz" \
+        "${PKG_BASE}/lieshouboot-${CI_COMMIT_TAG}.tar.gz"
     - |
       curl -sS --fail --request POST \
         --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
@@ -257,10 +260,37 @@ release:
 EOF
 ```
 
-- [ ] **Step 2: YAML 自检**
+- [ ] **Step 2: YAML 自检（必须是类型级检查，不能只看 job 名）**
 
-Run: `python3 -c "import yaml;d=yaml.safe_load(open('.gitlab-ci.yml'));print([k for k in d if k not in ('stages','variables','default')])"`
-Expected: `['backend', 'frontend', 'release']`
+```bash
+cat > /tmp/ci_check.py <<'PY'
+"""GitLab CI 本地自检：捕获 PyYAML 能过、但 GitLab 会拒的类型错误。
+核心陷阱：plain scalar 里出现 ": " 会被 YAML 当映射 → script 项变成 dict，
+GitLab 报 config_error（failure_reason=config_error、0 个 job）。"""
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1] if len(sys.argv) > 1 else '.gitlab-ci.yml'))
+special = {'stages', 'variables', 'default', 'include', 'workflow'}
+jobs = {k: v for k, v in d.items() if k not in special and isinstance(v, dict)}
+bad = []
+for name, job in jobs.items():
+    for key in ('script', 'before_script', 'after_script'):
+        items = job.get(key)
+        if items is None: continue
+        if isinstance(items, str): items = [items]
+        for i, it in enumerate(items):
+            if not isinstance(it, str):
+                bad.append(f"  ✗ {name}.{key}[{i}] 类型={type(it).__name__} → {repr(it)[:80]}")
+print("jobs:", sorted(jobs))
+print("script/before_script 非字符串项:", len(bad))
+for b in bad: print(b)
+sys.exit(1 if bad else 0)
+PY
+python3 /tmp/ci_check.py
+```
+
+Expected: `jobs: ['backend', 'frontend', 'release']` + `script/before_script 非字符串项: 0` + 退出码 `0`
+
+> ⚠️ **这个检查不是形式主义。** 实测踩过：`- curl ... --header "JOB-TOKEN: ${CI_JOB_TOKEN}" ...` 里的 `": "` 让 YAML 把它解成**映射**，PyYAML 不报错、`yaml.safe_load` 照常返回 3 个 job，但 GitLab 报 `failure_reason=config_error`、**pipeline 里 0 个 job**。任何含 `: ` 的 plain scalar 都必须写成 `- |` 块或加引号。
 
 - [ ] **Step 3: 提交并推送**
 
@@ -309,6 +339,7 @@ Expected：
 | 症状 | 首个要查的 |
 | --- | --- |
 | `stuck_pending` / `pending` 不变 | runner tag 是否 `wqc`；`run_untagged=false` 是否被别处改过 |
+| pipeline **0 个 job** 且立即 failed | `failure_reason=config_error` → 配置被 GitLab 拒。用 Rails 取真实原因：`Gitlab::Ci::Config.new(<yml content>).valid? / .errors`（只会给出**首条**错误） |
 | 克隆阶段 permission denied (github) | Task 1 的 `pre_clone_script` 是否真的生效（`docker exec gitlab-runner cat /etc/gitlab-runner/config.toml`） |
 | `frontend` 找不到 git / pnpm | 镜像是否被覆盖成 slim |
 | `backend` OOM | runner `concurrent=1` 下内存；临时把 `mvn` 加 `-Dmaven.test.skip=false` 前的堆参数调整 |
