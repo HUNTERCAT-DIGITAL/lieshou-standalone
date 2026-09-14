@@ -5,7 +5,7 @@
  * 扫描 packages/boot/src/features/，生成四端注入（客户聚合仓模式）：
  *   - admin-web  : apps/admin/src/config/editions/boot.extra.ts（品牌+门户+extraRoutes）
  *   - desktop    : apps/desktop/src/config/editions/boot.extra.ts（extraRoutes）
- *   - mini-program: src/config/editions/extra.ts（EXTRA_PAGES/ENTRIES）+ 薄壳页 pages/boot/workspace/
+ *   - mini-program: src/config/editions/extra.ts（EXTRA_HOME/PAGES/TABBAR/ENTRIES）+ 薄壳页 pages/boot/workspace/
  *   - mobile     : app/(main)/boot/workspace.tsx 薄壳页（Expo Router 文件路由自动注册）
  *
  * 约定：features/<name>/ui/admin/*.tsx = 专属页面（admin/desktop 注入 extraRoutes）；
@@ -85,7 +85,7 @@ ${nonPortal.map((p) => `  { path: '/${p.feat}', load: () => import('@lieshouclou
   console.log('✅ desktop: editions/boot.extra.ts');
 }
 
-// —— ③ mini-program（EXTRA_PAGES/ENTRIES + 薄壳页）——
+// —— ③ mini-program（EXTRA_HOME/PAGES/TABBAR/ENTRIES + 薄壳页）——
 {
   const extraFile = path.join(root, 'apps/mini-program/src/config/editions/extra.ts');
   const pageDir = path.join(root, 'apps/mini-program/src/pages/boot/workspace');
@@ -96,6 +96,13 @@ ${nonPortal.map((p) => `  { path: '/${p.feat}', load: () => import('@lieshouclou
 
   const extraContent = `/**
  * lieshou-boot 专属页面注册（scripts/prepare.mjs 生成 · 勿手改/勿提交）.
+ *
+ * ⚠️ 导出符号必须与「被 pin 的 mini-program 端仓」的 import 严格对齐（端仓是契约权威）：
+ *      app.config.ts            → EXTRA_HOME / EXTRA_PAGES / EXTRA_TABBAR
+ *      pages/workbench/...      → EXTRA_ENTRIES
+ *    端内上游默认版 src/config/editions/extra.ts 是同一套契约；本文件覆盖它，
+ *    因此漏导出任何一个都会在 typecheck 直接报 TS2305（实测踩过：缺 EXTRA_HOME/EXTRA_TABBAR）。
+ *    mini 是唯一用「与端仓同名同路径」槽位的端，其余端用的是 boot.extra.ts，不覆盖端仓默认文件。
  */
 export interface ClientEntry {
   key: string;
@@ -103,7 +110,27 @@ export interface ClientEntry {
   url: string;
 }
 
+export interface ClientTabBarItem {
+  pagePath: string;
+  text: string;
+  iconPath?: string;
+  selectedIconPath?: string;
+}
+
+export interface ClientTabBar {
+  color: string;
+  selectedColor: string;
+  backgroundColor: string;
+  list: ClientTabBarItem[];
+}
+
+/** 客户启动页（对外品牌/内容首页，优先于默认登录页）；留空 = 走端默认登录页 */
+export const EXTRA_HOME: string | undefined = undefined;
+
 export const EXTRA_PAGES: string[] = ['pages/boot/workspace/index'];
+
+/** 客户底部导航（原生 tabBar）；本版别不启用 */
+export const EXTRA_TABBAR: ClientTabBar | undefined = undefined;
 
 export const EXTRA_ENTRIES: ClientEntry[] = [
 ${entries}
