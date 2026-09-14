@@ -56,7 +56,9 @@ frontend:
     - git submodule update --init --recursive
   script:
     - node -v
-    - corepack prepare pnpm@9.12.0 --activate
+    # 必须先 corepack enable（安装 shim 到 PATH）；只 prepare --activate 不会让 pnpm 可执行
+    - corepack enable && corepack prepare pnpm@9.12.0 --activate
+    - pnpm -v
     - node scripts/prepare.mjs
     - pnpm install --no-frozen-lockfile --force
     - |
