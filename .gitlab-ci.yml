@@ -46,6 +46,13 @@ backend:
     - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ts.huntercat.cn/".insteadOf "ssh://git@gitlab.ts.huntercat.cn:22220/"
     - git submodule sync --recursive
     - git submodule update --init --recursive
+    # 内网 Nexus 由 Caddy 内部 CA 签发，而 job 容器的 JVM 不信任它（cacerts 里没有 caddy）
+    # → 依赖源已在仓内 .mvn/settings.xml 固定为 Nexus；这里补 JVM 信任库
+    - test -f /root/.m2/caddy-root.crt || { echo "❌ 缺少 CA：/root/.m2/caddy-root.crt（应由 runner 挂载的 m2 卷提供）"; exit 1; }
+    - JH=$(dirname $(dirname $(readlink -f $(command -v java)))) && keytool -importcert -noprompt -alias caddy-root -file /root/.m2/caddy-root.crt -keystore "$JH/lib/security/cacerts" -storepass changeit
+    # 断言依赖源真的是内网 Nexus（不是悄悄回退到公网 central）
+    - mvn -B -ntp help:effective-settings -Doutput=/tmp/eff-settings.xml -q
+    - grep -q "nexus.ts.huntercat.cn/repository/maven-public" /tmp/eff-settings.xml && echo "✅ 依赖源 = 内网 Nexus maven-public"
   script:
     - java -version
     - mvn -B -ntp -f pom.xml verify
@@ -98,6 +105,10 @@ release:
     - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ts.huntercat.cn/".insteadOf "ssh://git@gitlab.ts.huntercat.cn:22220/"
     - git submodule sync --recursive
     - git submodule update --init --recursive
+    - test -f /root/.m2/caddy-root.crt || { echo "❌ 缺少 CA：/root/.m2/caddy-root.crt"; exit 1; }
+    - JH=$(dirname $(dirname $(readlink -f $(command -v java)))) && keytool -importcert -noprompt -alias caddy-root -file /root/.m2/caddy-root.crt -keystore "$JH/lib/security/cacerts" -storepass changeit
+    - mvn -B -ntp help:effective-settings -Doutput=/tmp/eff-settings.xml -q
+    - grep -q "nexus.ts.huntercat.cn/repository/maven-public" /tmp/eff-settings.xml && echo "✅ 依赖源 = 内网 Nexus maven-public"
     - curl -fsSL -o /tmp/node.tar.gz https://registry.npmmirror.com/-/binary/node/v22.23.2/node-v22.23.2-linux-x64.tar.gz
     - tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1
     - node -v
